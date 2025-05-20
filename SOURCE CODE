@@ -1,0 +1,51 @@
+ Requirements
+Install the following Python packages:
+pip install scikit-surprise pandas
+
+SOURCE CODE 
+
+
+import pandas as pd
+from surprise import Dataset, Reader, SVD
+from surprise.model_selection import train_test_split
+from surprise import accuracy
+
+# Load MovieLens dataset
+ratings = pd.read_csv("ratings.csv")  # userId, movieId, rating, timestamp
+movies = pd.read_csv("movies.csv")    # movieId, title, genres
+
+# Prepare data for Surprise library
+reader = Reader(rating_scale=(0.5, 5.0))
+data = Dataset.load_from_df(ratings[['userId', 'movieId', 'rating']], reader)
+
+# Train/test split
+trainset, testset = train_test_split(data, test_size=0.2)
+
+# Use SVD (Singular Value Decomposition)
+model = SVD()
+model.fit(trainset)
+
+# Predict on test data
+predictions = model.test(testset)
+
+# Evaluate accuracy
+print("RMSE:", accuracy.rmse(predictions))
+
+# Recommend top 5 movies for a specific user
+def get_top_n_recommendations(predictions, user_id, n=5):
+    # Filter predictions for the given user
+    user_predictions = [pred for pred in predictions if pred.uid == str(user_id)]
+    # Sort by estimated rating
+    user_predictions.sort(key=lambda x: x.est, reverse=True)
+    # Get top N
+    top_n = user_predictions[:n]
+    # Map movieId to title
+    top_n_movie_ids = [pred.iid for pred in top_n]
+    recommended_movies = movies[movies['movieId'].isin([int(iid) for iid in top_n_movie_ids])]
+    return recommended_movies
+
+# Example: Recommend for user with userId = 1
+user_id = 1
+top_movies = get_top_n_recommendations(predictions, user_id)
+print("\nRecommended Movies for User", user_id)
+print(top_movies[['title', 'genres']])
