@@ -1,0 +1,233 @@
+# -*- coding: utf-8 -*-
+"""
+Python Programming for AI-Powered Movie Recommendation Systems
+
+This script provides a modular structure and illustrative examples of Python code
+commonly used in building AI-powered movie recommendation systems. It covers
+data loading, preprocessing, various recommendation algorithms (collaborative,
+content-based, and a basic hybrid approach), evaluation, and a simplified
+recommendation function.
+
+Note: This is a conceptual outline with simplified implementations. A
+production-ready system would require more robust data handling, feature
+engineering, model tuning, evaluation, and deployment strategies.
+"""
+
+import pandas as pd
+import numpy as np
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import linear_kernel
+from surprise import Reader, Dataset, SVD
+from surprise.model_selection import train_test_split
+from surprise import accuracy
+from collections import defaultdict
+
+# -----------------------------------------------------------------------------
+# 1. Data Loading and Preprocessing
+# -----------------------------------------------------------------------------
+
+def load_movie_data(ratings_file, movies_file=None):
+    """Loads movie ratings data and optionally movie metadata."""
+    ratings_df = pd.read_csv(ratings_file)
+    if movies_file:
+        movies_df = pd.read_csv(movies_file)
+        return ratings_df, movies_df
+    return ratings_df, None
+
+def preprocess_data(ratings_df, movies_df=None):
+    """Performs basic data preprocessing steps."""
+    # Rename columns for consistency
+    ratings_df.rename(columns={'userId': 'user_id', 'movieId': 'item_id', 'rating': 'rating'}, inplace=True, errors='ignore')
+    if movies_df is not None:
+        movies_df.rename(columns={'movieId': 'item_id', 'title': 'movie_title'}, inplace=True, errors='ignore')
+    return ratings_df, movies_df
+
+# Example usage:
+# ratings_data, movies_data = load_movie_data('ratings.csv', 'movies.csv')
+# if ratings_data is not None:
+#     ratings_data, movies_data = preprocess_data(ratings_data, movies_data)
+#     print("Ratings data loaded and preprocessed.")
+#     if movies_data is not None:
+#         print("Movies data loaded and preprocessed.")
+
+# -----------------------------------------------------------------------------
+# 2. Collaborative Filtering using Surprise (SVD)
+# -----------------------------------------------------------------------------
+
+def train_svd_model(ratings_df, n_factors=100, random_state=42):
+    """Trains an SVD model using the Surprise library."""
+    reader = Reader(rating_scale=(ratings_df['rating'].min(), ratings_df['rating'].max()))
+    data = Dataset.load_from_df(ratings_df[['user_id', 'item_id', 'rating']], reader)
+    trainset, _ = train_test_split(data, test_size=0.2, random_state=random_state)
+    model = SVD(n_factors=n_factors, random_state=random_state)
+    model.fit(trainset)
+    return model, trainset
+
+def get_svd_recommendations(model, trainset, user_id, top_n=10):
+    """Generates top N movie recommendations for a given user using the trained SVD model."""
+    user_items = trainset.ur[trainset.to_inner_uid(user_id)]
+    watched_items = [trainset.to_raw_iid(inner_id) for inner_id, _ in user_items]
+
+    predictions = []
+    for item_inner_id in trainset.all_items():
+        item_id = trainset.to_raw_iid(item_inner_id)
+        if item_id not in watched_items:
+            predictions.append((item_id, model.predict(user_id, item_id).est))
+
+    predictions.sort(key=lambda x: x[1], reverse=True)
+    return predictions[:top_n]
+
+# Example usage:
+# if ratings_data is not None:
+#     svd_model, svd_trainset = train_svd_model(ratings_data)
+#     user_id_to_recommend = ratings_data['user_id'].unique()[0] # Example user
+#     svd_recommendations = get_svd_recommendations(svd_model, svd_trainset, user_id_to_recommend)
+#     print(f"\nTop SVD recommendations for user {user_id_to_recommend}: {svd_recommendations}")
+
+# -----------------------------------------------------------------------------
+# 3. Content-Based Filtering using Movie Descriptions
+# -----------------------------------------------------------------------------
+
+def train_content_based_model(movies_df, description_column='overview', stop_words='english'):
+    """Trains a content-based filtering model using TF-IDF on movie descriptions."""
+    if movies_df is None or description_column not in movies_df.columns:
+        print("Movie descriptions not available.")
+        return None, None
+    tfidf_vectorizer = TfidfVectorizer(stop_words=stop_words)
+    tfidf_matrix = tfidf_vectorizer.fit_transform(movies_df[description_column].fillna(''))
+    return tfidf_vectorizer, tfidf_matrix
+
+def get_content_based_recommendations(movie_title, tfidf_vectorizer, tfidf_matrix, movies_df, top_n=10):
+    """Generates top N movie recommendations based on the content similarity to a given movie."""
+    if tfidf_vectorizer is None or tfidf_matrix is None or movies_df is None:
+        return []
+    try:
+        movie_index = movies_df[movies_df['movie_title'] == movie_title].index[0]
+        movie_vector = tfidf_vectorizer.transform(movies_df.iloc[[movie_index]]['overview'].fillna(''))
+        cosine_similarities = linear_kernel(movie_vector, tfidf_matrix).flatten()
+        similar_movie_indices = cosine_similarities.argsort()[::-1][1:top_n+1] # Exclude the movie itself
+        recommendations = movies_df.iloc[similar_movie_indices][['item_id', 'movie_title']].to_dict('records')
+        return recommendations
+    except IndexError:
+        print(f"Movie '{movie_title}' not found.")
+        return []
+
+# Example usage:
+# if movies_data is not None:
+#     tfidf_vectorizer, tfidf_matrix = train_content_based_model(movies_data)
+#     if tfidf_vectorizer and tfidf_matrix:
+#         movie_to_recommend_from = movies_data['movie_title'].iloc[0] # Example movie
+#         content_recommendations = get_content_based_recommendations(
+#             movie_to_recommend_from, tfidf_vectorizer, tfidf_matrix, movies_data
+#         )
+#         print(f"\nContent-based recommendations based on '{movie_to_recommend_from}': {content_recommendations}")
+
+# -----------------------------------------------------------------------------
+# 4. Basic Hybrid Recommendation (Combining Collaborative and Content-Based)
+# -----------------------------------------------------------------------------
+
+def hybrid_recommendation(user_id, movie_title, svd_model, svd_trainset, tfidf_vectorizer, tfidf_matrix, movies_df, top_n=10, cf_weight=0.6, cb_weight=0.4):
+    """Combines collaborative and content-based recommendations."""
+    cf_recs = get_svd_recommendations(svd_model, svd_trainset, user_id, top_n * 2)
+    cb_recs = get_content_based_recommendations(movie_title, tfidf_vectorizer, tfidf_matrix, movies_df, top_n * 2)
+
+    hybrid_scores = defaultdict(float)
+    all_recommendations = set()
+
+    for item_id, score in cf_recs:
+        hybrid_scores[item_id] += score * cf_weight
+        all_recommendations.add(item_id)
+
+    movie_title_to_id = movies_df.set_index('movie_title')['item_id'].to_dict()
+    movie_id_to_title = movies_df.set_index('item_id')['movie_title'].to_dict()
+
+    for rec in cb_recs:
+        item_id = rec['item_id']
+        similarity = -1 # Similarity is not directly available in the current content-based output
+        if movie_title in movie_title_to_id and item_id in movie_id_to_title and tfidf_vectorizer and tfidf_matrix and movies_df is not None:
+            try:
+                movie1_index = movies_df[movies_df['movie_title'] == movie_title].index[0]
+                movie2_index = movies_df[movies_df['item_id'] == item_id].index[0]
+                movie1_vector = tfidf_vectorizer.transform(movies_df.iloc[[movie1_index]]['overview'].fillna(''))
+                movie2_vector = tfidf_vectorizer.transform(movies_df.iloc[[movie2_index]]['overview'].fillna(''))
+                similarity = linear_kernel(movie1_vector, movie2_vector)[0][0]
+            except IndexError:
+                similarity = 0
+
+        hybrid_scores[item_id] += similarity * cb_weight
+        all_recommendations.add(item_id)
+
+    sorted_recommendations = sorted(all_recommendations, key=lambda item_id: hybrid_scores[item_id], reverse=True)[:top_n]
+    return [(item_id, hybrid_scores[item_id]) for item_id in sorted_recommendations]
+
+# Example usage:
+# if ratings_data is not None and movies_data is not None:
+#     svd_model, svd_trainset = train_svd_model(ratings_data)
+#     tfidf_vectorizer, tfidf_matrix = train_content_based_model(movies_data)
+#     if svd_model and tfidf_vectorizer and tfidf_matrix:
+#         user_id_for_hybrid = ratings_data['user_id'].unique()[1] # Example user
+#         movie_for_hybrid_context = movies_data['movie_title'].iloc[1] # Example movie
+#         hybrid_recs = hybrid_recommendation(
+#             user_id_for_hybrid, movie_for_hybrid_context, svd_model, svd_trainset,
+#             tfidf_vectorizer, tfidf_matrix, movies_data
+#         )
+#         print(f"\nHybrid recommendations for user {user_id_for_hybrid} based on '{movie_for_hybrid_context}': {hybrid_recs}")
+
+# -----------------------------------------------------------------------------
+# 5. Recommendation Function (Simplified)
+# -----------------------------------------------------------------------------
+
+def recommend_movies(user_id, last_watched_movie=None, use_collaborative=True, use_content_based=False, top_n=5):
+    """A simplified function to get movie recommendations based on chosen methods."""
+    ratings_file = 'ratings.csv' # Replace with your actual file path
+    movies_file = 'movies.csv'   # Replace with your actual file path
+
+    try:
+        ratings_df, movies_df = load_movie_data(ratings_file, movies_file)
+        if ratings_df is None:
+            return "Error: Ratings data not loaded."
+        ratings_df, movies_df = preprocess_data(ratings_df, movies_df)
+
+        recommendations = []
+
+        if use_collaborative:
+            svd_model, svd_trainset = train_svd_model(ratings_df)
+            recommendations.extend(get_svd_recommendations(svd_model, svd_trainset, user_id, top_n))
+
+        if use_content_based and movies_df is not None and last_watched_movie:
+            tfidf_vectorizer, tfidf_matrix = train_content_based_model(movies_df)
+            if tfidf_vectorizer and tfidf_matrix:
+                content_recs = get_content_based_recommendations(
+                    last_watched_movie, tfidf_vectorizer, tfidf_matrix, movies_df, top_n
+                )
+                # Adjust format to be similar to collaborative output
+                recommendations.extend([(rec['item_id'], -1) for rec in content_recs]) # Similarity not directly used here
+
+        # Remove duplicates and potentially sort by a combined score if available
+        unique_recommendations = list({item[0]: item for item in recommendations}.values())
+        unique_recommendations.sort(key=lambda x: x[1], reverse=True) # Sort by predicted rating (collaborative)
+
+        # If only content-based, just return the titles
+        if use_content_based and not use_collaborative and movies_df is not None and last_watched_movie:
+            content_recs = get_content_based_recommendations(
+                last_watched_movie, tfidf_vectorizer, tfidf_matrix, movies_df, top_n
+            )
+            return [rec['movie_title'] for rec in content_recs]
+
+        # Map item_ids back to movie titles if movies_df is available
+        if movies_df is not None:
+            movie_id_to_title = movies_df.set_index('item_id')['movie_title'].to_dict()
+            return [(movie_id_to_title.get(item_id, item_id), score) for item_id, score in unique_recommendations[:top_n]]
+        else:
+            return unique_recommendations[:top_n]
+
+    except FileNotFoundError as e:
+        return f"Error: File not found - {e}"
+    except Exception as e:
+        return f"An error occurred: {e}"
+
+# Example of using the simplified recommendation function:
+# user_to_get_recommendations = 1
+# last_movie_watched = "Toy Story (1995)" # Ensure this title exists in your movies data
+# top_recommendations = recommend_movies(user_to_get_recommendations, last_movie_watched, use_collaborative=True, use_content_based=True, top_n=5)
+# print(f"\nTop recommendations for user {user_to_get_recommendations}: {top_recommendations}")
